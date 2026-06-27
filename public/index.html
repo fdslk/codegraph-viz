@@ -1,0 +1,213 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>codegraph-viz</title>
+<script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<style>
+  :root {
+    --ink:#0c0f13; --panel:#12161c; --line:#1d242d;
+    --text:#c8d0d8; --muted:#6b7682; --phosphor:#38e1c6; --amber:#f5b14c;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--ink); color:var(--text); font-family:var(--sans); }
+  body { display:flex; flex-direction:column; }
+  header {
+    border-bottom:1px solid var(--line); padding:10px 16px;
+    display:flex; align-items:center; gap:18px; position:relative;
+  }
+  header::before { content:""; position:absolute; left:0; right:0; top:0; height:2px; background:linear-gradient(90deg, transparent, var(--phosphor), transparent); opacity:.6; }
+  .brand { font-family:var(--mono); font-weight:600; letter-spacing:.5px; }
+  .brand b { color:var(--phosphor); }
+  nav { display:flex; gap:4px; }
+  .tab { font-family:var(--mono); font-size:13px; color:var(--muted); background:none; border:1px solid transparent; padding:5px 12px; border-radius:6px; cursor:pointer; }
+  .tab[aria-selected="true"] { color:var(--ink); background:var(--phosphor); }
+  .tab:hover:not([aria-selected="true"]) { color:var(--text); border-color:var(--line); }
+  .spacer { flex:1; }
+  .meta { font-family:var(--mono); font-size:12px; color:var(--muted); }
+  .meta b { color:var(--text); font-weight:600; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--muted); margin-right:6px; vertical-align:middle; }
+  .dot.live { background:var(--phosphor); box-shadow:0 0 8px var(--phosphor); }
+  main { flex:1; position:relative; overflow:hidden; }
+  /* ── RENDER HOOK: Cytoscape mounts into #graph ────────────────── */
+  #graph { position:absolute; inset:0; }
+  .placeholder { position:absolute; inset:0; display:grid; place-items:center; text-align:center; }
+  .placeholder .box { max-width:520px; padding:28px; }
+  .placeholder h2 { font-family:var(--mono); color:var(--phosphor); font-weight:600; margin:0 0 10px; }
+  .placeholder p { color:var(--muted); line-height:1.6; margin:6px 0; font-size:14px; }
+  .placeholder code { font-family:var(--mono); color:var(--amber); }
+  .err { color:var(--amber); }
+  #crumbs { border-bottom:1px solid var(--line); padding:7px 16px; font-family:var(--mono); font-size:12px; color:var(--muted); display:flex; gap:6px; align-items:center; min-height:32px; }
+  #crumbs .crumb { color:var(--phosphor); cursor:pointer; }
+  #crumbs .crumb:hover { text-decoration:underline; }
+  #crumbs .cur { color:var(--text); }
+  #crumbs .sep { color:var(--line); }
+  #crumbs .hint { color:var(--muted); opacity:.7; }
+</style>
+
+<header>
+  <span class="brand">code<b>graph</b>-viz</span>
+  <nav id="tabs">
+    <button class="tab" data-view="architecture" aria-selected="true">architecture</button>
+    <button class="tab" data-view="filedeps">file deps</button>
+    <button class="tab" data-view="callgraph">call graph</button>
+  </nav>
+  <span class="spacer"></span>
+  <span class="meta" id="meta"><span class="dot" id="livedot"></span>connecting…</span>
+</header>
+<div id="crumbs"></div>
+
+<main>
+  <div id="graph"></div>
+  <div class="placeholder" id="placeholder">
+    <div class="box">
+      <h2 id="ph-title">frontend shell</h2>
+      <p id="ph-body">Backend is wired up. This is where the graph will render.</p>
+      <p>Render hook: mount Cytoscape into <code>#graph</code> inside <code>render(view, data)</code> below.</p>
+    </div>
+  </div>
+</main>
+
+<script>
+// ── tiny client for the skeleton ──────────────────────────────────
+const state = { view: 'architecture', mtime: null, meta: null, prefix: '', file: null };
+const $ = (s) => document.querySelector(s);
+const api = (p) => fetch(p).then((r) => r.json());
+
+async function loadMeta() {
+  try {
+    const m = await api('/api/meta');
+    state.meta = m;
+    if (m.error) {
+      $('#meta').innerHTML = '<span class="dot"></span><span class="err">schema not detected — see /api/schema</span>';
+      return;
+    }
+    $('#livedot').classList.add('live');
+    $('#meta').innerHTML =
+      `<span class="dot live"></span><b>${m.nodeCount.toLocaleString()}</b> symbols · ` +
+      `<b>${m.edgeCount.toLocaleString()}</b> edges`;
+  } catch {
+    $('#meta').innerHTML = '<span class="dot"></span><span class="err">backend offline</span>';
+  }
+}
+
+async function load(view) {
+  state.view = view;
+  for (const t of document.querySelectorAll('.tab'))
+    t.setAttribute('aria-selected', String(t.dataset.view === view));
+  const params = new URLSearchParams({ view });
+  if (view === 'architecture' || view === 'filedeps') { if (state.prefix) params.set('prefix', state.prefix); }
+  if (view === 'callgraph' && state.file) params.set('file', state.file);
+  const data = await api('/api/graph?' + params);
+  state.mtime = data.mtime;
+  renderCrumbs(view);
+  render(view, data);
+}
+
+// ── breadcrumb: shows scope, click a segment to jump there ────────
+function renderCrumbs(view) {
+  const bc = $('#crumbs');
+  if (view === 'callgraph') {
+    if (!state.file) { bc.innerHTML = '<span class="hint">top functions by call degree — open a file from “file deps” to scope this</span>'; return; }
+    bc.innerHTML =
+      '<span class="crumb" data-act="filedeps">‹ file deps</span> <span class="sep">/</span> ' +
+      `<span class="cur">${state.file}</span> <span class="hint">— calls &amp; callers in this file</span>`;
+    return;
+  }
+  const parts = state.prefix ? state.prefix.split('/').filter(Boolean) : [];
+  const segs = ['<span class="crumb" data-prefix="">root</span>'];
+  let acc = '';
+  for (const p of parts) { acc = acc ? acc + '/' + p : p; segs.push(`<span class="crumb" data-prefix="${acc}">${p}</span>`); }
+  const hint = view === 'filedeps' ? ' <span class="hint">— files in this folder &amp; their deps (click a file → call graph)</span>'
+    : (parts.length ? '' : ' <span class="hint">— click a folder to drill in</span>');
+  bc.innerHTML = segs.join(' <span class="sep">/</span> ') + hint;
+}
+
+$('#crumbs').addEventListener('click', (e) => {
+  const seg = e.target.closest('[data-prefix]');
+  if (seg) { state.prefix = seg.dataset.prefix; state.file = null; load(state.view === 'callgraph' ? 'filedeps' : state.view); return; }
+  if (e.target.closest('[data-act="filedeps"]')) { state.file = null; load('filedeps'); }
+});
+
+// ── RENDER HOOK ───────────────────────────────────────────────────
+// `data` = { view, nodes:[{id,label,kind,size?,focus?}], edges:[{source,target,...}], truncated }
+const KIND_COLOR = { folder:'#c98cff', file:'#f5b14c', function:'#38e1c6', method:'#38e1c6', class:'#6aa6ff', module:'#c98cff', interface:'#6aa6ff' };
+const colorFor = (n) => n.external ? '#4a5560' : (KIND_COLOR[n.kind] || '#6b7682');
+
+let cy = null;
+function render(view, data) {
+  const ph = $('#placeholder');
+  if (data.error) {
+    ph.style.display = 'grid';
+    $('#ph-title').textContent = 'schema not detected';
+    $('#ph-body').innerHTML = 'Open <code>/api/schema</code> and set table/column names in <code>src/db.mjs</code> CONFIG.';
+    return;
+  }
+  ph.style.display = 'none';
+
+  const ids = new Set(data.nodes.map((n) => n.id));
+  const elements = [
+    ...data.nodes.map((n) => ({ data: {
+      id: n.id, label: n.label || n.id, color: colorFor(n),
+      size: 14 + Math.min(36, (n.size || 0)),
+      focus: n.focus ? 1 : 0, expandable: n.expandable ? 1 : 0,
+      path: n.path || n.id, kind: n.kind,
+    } })),
+    // ponytail: drop edges to nodes the view truncated away, else cytoscape throws
+    ...data.edges.filter((e) => ids.has(e.source) && ids.has(e.target))
+      .map((e) => ({ data: { source: e.source, target: e.target } })),
+  ];
+
+  if (cy) cy.destroy();
+  cy = cytoscape({
+    container: document.getElementById('graph'),
+    elements,
+    style: [
+      { selector: 'node', style: {
+        'background-color': 'data(color)', 'width': 'data(size)', 'height': 'data(size)',
+        'label': 'data(label)', 'color': '#c8d0d8', 'font-family': 'ui-monospace, Menlo, monospace',
+        'font-size': 9, 'min-zoomed-font-size': 7, 'text-valign': 'bottom', 'text-margin-y': 3,
+        'border-width': 'data(focus)', 'border-color': '#fff' } },
+      { selector: 'edge', style: {
+        'width': 1, 'line-color': '#1d242d', 'target-arrow-color': '#1d242d',
+        'target-arrow-shape': 'triangle', 'arrow-scale': .7, 'curve-style': 'haystack', 'opacity': .7 } },
+      { selector: 'node[expandable = 1]', style: { 'border-width': 2, 'border-color': '#c98cff', 'border-style': 'dashed' } },
+      { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#38e1c6' } },
+      { selector: '.faded', style: { 'opacity': .12 } },
+    ],
+    layout: { name: 'cose', animate: false, nodeRepulsion: 8000, idealEdgeLength: 60, fit: true, padding: 30 },
+    wheelSensitivity: .2,
+  });
+
+  cy.on('tap', 'node', (e) => {
+    const d = e.target.data();
+    if (view === 'architecture') {
+      // drill into a folder; a leaf (no subfolders) jumps to its file deps
+      state.prefix = d.path;
+      load(d.expandable ? 'architecture' : 'filedeps');
+    } else if (view === 'filedeps') {
+      state.file = d.path; load('callgraph');   // open this file's call graph
+    } else {
+      const hood = e.target.closedNeighborhood();
+      cy.elements().addClass('faded'); hood.removeClass('faded');
+    }
+  });
+  cy.on('tap', (e) => { if (e.target === cy) cy.elements().removeClass('faded'); });
+}
+
+// ── live refresh: poll mtime, reload current view on change ───────
+async function poll() {
+  try {
+    const { mtime } = await api('/api/version');
+    if (state.mtime != null && mtime !== state.mtime) { await loadMeta(); await load(state.view); }
+  } catch {}
+}
+setInterval(poll, 3000);
+
+document.getElementById('tabs').addEventListener('click', (e) => {
+  const v = e.target?.dataset?.view; if (v) load(v);
+});
+
+loadMeta().then(() => load(state.view));
+</script>

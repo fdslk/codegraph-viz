@@ -1,0 +1,21 @@
+{
+  "name": "@fdslk/codegraph-viz",
+  "version": "1.0.0",
+  "description": "Local web visualizer for codegraph's knowledge graph (macOS).",
+  "type": "module",
+  "bin": {
+    "codegraph-viz": "./bin/cli.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "viz": "node bin/cli.mjs",
+    "start": "node bin/cli.mjs",
+    "ls": "node bin/cli.mjs project ls"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "license": "MIT"
+}
