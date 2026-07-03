@@ -170,11 +170,14 @@ function render(view, data) {
         'font-size': 9, 'min-zoomed-font-size': 7, 'text-valign': 'bottom', 'text-margin-y': 3,
         'border-width': 'data(focus)', 'border-color': '#fff' } },
       { selector: 'edge', style: {
-        'width': 1, 'line-color': '#1d242d', 'target-arrow-color': '#1d242d',
-        'target-arrow-shape': 'triangle', 'arrow-scale': .7, 'curve-style': 'haystack', 'opacity': .7 } },
+        'width': 2, 'line-color': '#8a9bb0', 'target-arrow-color': '#8a9bb0',
+        'target-arrow-shape': 'triangle', 'arrow-scale': .9, 'curve-style': 'haystack', 'opacity': .9 } },
       { selector: 'node[expandable = 1]', style: { 'border-width': 2, 'border-color': '#c98cff', 'border-style': 'dashed' } },
       { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#38e1c6' } },
-      { selector: '.faded', style: { 'opacity': .12 } },
+      { selector: '.highlight', style: { 'opacity': 1 } },
+      { selector: 'edge.highlight', style: { 'line-color': '#38e1c6', 'target-arrow-color': '#38e1c6', 'width': 3 } },
+      { selector: 'node.highlight', style: { 'border-width': 3, 'border-color': '#38e1c6' } },
+      { selector: '.faded', style: { 'opacity': .1 } },
     ],
     layout: { name: 'cose', animate: false, nodeRepulsion: 8000, idealEdgeLength: 60, fit: true, padding: 30 },
     wheelSensitivity: .2,
@@ -190,10 +193,11 @@ function render(view, data) {
       state.file = d.path; load('callgraph');   // open this file's call graph
     } else {
       const hood = e.target.closedNeighborhood();
-      cy.elements().addClass('faded'); hood.removeClass('faded');
+      cy.elements().addClass('faded').removeClass('highlight');
+      hood.removeClass('faded').addClass('highlight');
     }
   });
-  cy.on('tap', (e) => { if (e.target === cy) cy.elements().removeClass('faded'); });
+  cy.on('tap', (e) => { if (e.target === cy) cy.elements().removeClass('faded').removeClass('highlight'); });
 }
 
 // ── live refresh: poll mtime, reload current view on change ───────
